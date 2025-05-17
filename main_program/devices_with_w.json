@@ -1,0 +1,16 @@
+{
+  "Dishwasher [kW]":   { "w": 1.0, "lambda": 0 },
+  "Microwave [kW]":    { "w": 0.0, "lambda": 1 },
+  "Garage door [kW]":  { "w": 0.0, "lambda": 1 },
+  "Furnace 1 [kW]":    { "w": 0.0, "lambda": 1 },
+  "Furnace 2 [kW]":    { "w": 0.0, "lambda": 1 },
+  "Home office [kW]":  { "w": 0.0, "lambda": 1 },
+  "Fridge [kW]":       { "w": 0.0, "lambda": 1 },
+  "Wine cellar [kW]":  { "w": 0.0, "lambda": 1 },
+  "Kitchen 12 [kW]":   { "w": 0.0, "lambda": 1 },
+  "Kitchen 14 [kW]":   { "w": 0.0, "lambda": 1 },
+  "Kitchen 38 [kW]":   { "w": 0.0, "lambda": 1 },
+  "Barn [kW]":         { "w": 0.0, "lambda": 1 },
+  "Well [kW]":         { "w": 0.0, "lambda": 1 },
+  "Living room [kW]":  { "w": 0.0, "lambda": 1 }
+} 

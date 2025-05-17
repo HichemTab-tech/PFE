@@ -1,0 +1,32 @@
+src/
+    └── app/
+        ├── test
+        ├── fonts/
+        │   ├── GeistVF.woff
+        │   └── GeistMonoVF.woff
+        ├── page.js
+        ├── layout.js
+        ├── myFolder2
+        ├── favicon.ico
+        └── globals.css
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

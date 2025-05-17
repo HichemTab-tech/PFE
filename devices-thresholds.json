@@ -1,0 +1,16 @@
+{
+  "Dishwasher [kW]": 1.67e-05,
+  "Furnace 1 [kW]": 1.67e-05,
+  "Furnace 2 [kW]": 6.67e-05,
+  "Home office [kW]": 8.33e-05,
+  "Fridge [kW]": 6.67e-05,
+  "Wine cellar [kW]": 1.67e-05,
+  "Garage door [kW]": 1.67e-05,
+  "Kitchen 12 [kW]": 1.67e-05,
+  "Kitchen 14 [kW]": 1.67e-05,
+  "Kitchen 38 [kW]": 1.67e-05,
+  "Barn [kW]": 8.33e-05,
+  "Well [kW]": 1.67e-05,
+  "Living room [kW]": 1.67e-05,
+  "Microwave [kW]": 1.67e-05
+}
