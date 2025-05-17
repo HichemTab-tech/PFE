@@ -15,11 +15,11 @@ class CsaSolver(Solver):
 
 
 
-    def run(self, params, price_profile, load_profile, seed=None):
+    def run(self, params, seed=None):
         # delegate directly to your existing function
-        return self.run_csa(params, price_profile, seed=seed)
+        return self.run_csa(params, seed=seed)
 
-    def run_csa(self, devices, price_profile,
+    def run_csa(self, devices,
                 n_crows=30, max_iter=200, P_aw=0.1, seed=None):
         if seed is not None:
             np.random.seed(seed)

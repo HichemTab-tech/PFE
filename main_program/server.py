@@ -96,13 +96,13 @@ async def generate_planning(req: PlanningRequest):
 
 
     # unpack
-    α     = {d: params['alpha']//3600        for d, params in devices.items()}
-    β     = {d: params['beta']//3600 - 1     for d, params in devices.items()}
-    LOT_h = {d: params['LOT']/3600           for d, params in devices.items()}
-    P     = {d: params['power']              for d, params in devices.items()}
-    W     = {d: params['w']                  for d, params in devices.items()}
-    L     = {d: params['lambda']             for d, params in devices.items()}
-    M     = {d: params['m']                  for d, params in devices.items()}
+    α     = {d: params_['alpha']//3600        for d, params_ in params.items()}
+    β     = {d: params_['beta']//3600 - 1     for d, params_ in params.items()}
+    LOT_h = {d: params_['LOT']/3600           for d, params_ in params.items()}
+    P     = {d: params_['power']              for d, params_ in params.items()}
+    W     = {d: params_['w']                  for d, params_ in params.items()}
+    L     = {d: params_['lambda']             for d, params_ in params.items()}
+    M     = {d: params_['m']                  for d, params_ in params.items()}
 
     # valid hours with wrap-around
     valid_hours = {}
