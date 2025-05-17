@@ -129,7 +129,7 @@ async def generate_planning(req: PlanningRequest):
         'M': M,
         'valid_hours': valid_hours
     })
-    optimized_schedule = solver.run(params, price_profile, load_profile, seed=42)
+    optimized_schedule = solver.run(params, seed=42)
 
     # Cost estimations
     def estimate_cost(schedule, load_profile, price_profile):
