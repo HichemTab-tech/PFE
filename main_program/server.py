@@ -132,15 +132,21 @@ async def generate_planning(req: PlanningRequest):
     optimized_schedule = solver.run(params, seed=42)
 
     # Cost estimations
-    def estimate_cost(schedule, load_profile, price_profile):
-        cost = 0.0
+    def estimate_cost(schedule, effective_devices, params, load_profile, price_profile):
+        device_cost = 0.0
+        # 1) Cost for scheduled devices
         for d, h in schedule.items():
-            lot_hours = params[d]['LOT'] / 3600  # LOT in hours
-            hourly_cost = price_profile[h] * effective_devices[d]['lambda']
-            cost += lot_hours * hourly_cost
-        # Add baseline load cost
-        cost += (load_profile[req.start_hour:].sum()) * price_profile[req.start_hour:].mean()
-        return round(cost, 2)
+            power_kw = effective_devices[d].get('power', 1.0)  # kW draw
+            duration_h = params[d]['LOT'] / 3600  # hours of operation
+            device_cost += power_kw * duration_h * price_profile[h]  # kW·h × $/kWh
+
+        # 2) Baseline household load cost (now hour-by-hour)
+        baseline_cost = sum(
+            load_profile[h] * price_profile[h]
+            for h in load_profile.index
+        )
+
+        return device_cost + baseline_cost
 
     # Consumption estimations
     def estimate_consumption(schedule, effective_devices, params):
@@ -167,8 +173,8 @@ async def generate_planning(req: PlanningRequest):
         hourly_consumption = hourly_consumption.reindex(range(24), fill_value=0)
         return {hour: round(kW, 2) for hour, kW in hourly_consumption.items()}
 
-    default_cost = estimate_cost(default_schedule, load_profile, price_profile)
-    optimized_cost = estimate_cost(optimized_schedule, load_profile, price_profile)
+    default_cost = estimate_cost(default_schedule, effective_devices, params, load_profile, price_profile)
+    optimized_cost = estimate_cost(optimized_schedule, effective_devices, params, load_profile, price_profile)
 
     default_consumption_real = estimate_real_consumption(df_day)
     default_consumption = estimate_consumption(default_schedule, effective_devices, params)

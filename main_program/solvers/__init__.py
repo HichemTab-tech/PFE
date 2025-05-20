@@ -6,7 +6,7 @@ def SolverFactory(name: str, **kwargs):
     name = name.lower()
     if name == 'csa':
         return CsaSolver(**kwargs)
-    elif name in ('ga', 'genetic', 'geneticalgorithm'):
+    elif name in ('ga'):
       # pull out GA hyperparams (or use defaults)
         return GaSolver(**kwargs)
     else:
