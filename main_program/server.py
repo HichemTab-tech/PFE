@@ -1,3 +1,4 @@
+import numpy as np
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional, Dict
@@ -30,10 +31,14 @@ def build_price_profile():
     )
 
 def build_load_profile(df_day, devices):
-    numeric = df_day.select_dtypes(include=['float64', 'int64']).columns
-    smart = [c for c in numeric for d in devices if d in c]
-    baseline = df_day[numeric].drop(columns=smart).sum(axis=1)
-    lp = baseline.groupby(baseline.index.hour).mean().reindex(range(24), fill_value=0)
+    # 1) Take the true total‐house power column
+    #    (your CSV has "use [kW]" for total load)
+    total = df_day["use [kW]"]
+
+    # 2) If you want baseline _excluding_ your smart devices:
+    smart = df_day[[c for c in df_day.columns if any(d in c for d in devices)]].sum(axis=1)
+    baseline = total - smart
+    lp = baseline.groupby(baseline.index.hour).mean()
     return lp
 
 # --- Request/Response models ---
@@ -58,9 +63,6 @@ class PlanningResponse(BaseModel):
     optimized_consumption: Dict[int, float]
 
 # --- API Endpoints ---
-@app.get("/devices")
-async def get_devices():
-    return {d: {"w": v["w"], "lambda": v["lambda"]} for d, v in devices.items()}
 
 @app.post("/planning", response_model=PlanningResponse)
 async def generate_planning(req: PlanningRequest):
@@ -69,16 +71,7 @@ async def generate_planning(req: PlanningRequest):
     if df_day.empty:
         raise HTTPException(status_code=404, detail=f"No data for date {target}")
 
-    # Use custom params if provided
     effective_devices = devices.copy()
-    if req.custom_params:
-        for name, params in req.custom_params.items():
-            if name in effective_devices:
-                effective_devices[name]["w"] = params.w
-                effective_devices[name]["lambda"] = params.lambda_
-                # If 'power' is not already there, set a default fake value (1.5kW)
-                if "power" not in effective_devices[name]:
-                    effective_devices[name]["power"] = 1.5
 
     # Filter by start_hour
     df_filtered = df_day[df_day.index.hour >= req.start_hour]
@@ -88,8 +81,22 @@ async def generate_planning(req: PlanningRequest):
     load_profile = build_load_profile(df_filtered, effective_devices)
 
     # Default planning (basic alpha hour)
-    default_schedule = {d: p['alpha'] // 3600 for d, p in params.items()}
+    default_schedule = { d: int(round(p['m'])) for d,p in params.items() }
 
+    device_power = {}
+    for device in devices:
+        # find the matching column name
+        col = next((c for c in df_day.columns if device in c), None)
+        if col is None:
+            # fallback if you really don’t have per-device data
+            device_power[device] = 1.0
+        else:
+            # use the mean draw for a realistic average kW
+            device_power[device] = df_day[col].mean()
+
+    # now inject these into your devices config:
+    for d, p in effective_devices.items():
+        p['power'] = device_power[d]
 
 
 
@@ -132,7 +139,7 @@ async def generate_planning(req: PlanningRequest):
     optimized_schedule = solver.run(params, seed=42)
 
     # Cost estimations
-    def estimate_cost(schedule, effective_devices, params, load_profile, price_profile):
+    def estimate_cost(schedule):
         device_cost = 0.0
         # 1) Cost for scheduled devices
         for d, h in schedule.items():
@@ -148,37 +155,38 @@ async def generate_planning(req: PlanningRequest):
 
         return device_cost + baseline_cost
 
-    # Consumption estimations
-    def estimate_consumption(schedule, effective_devices, params):
+    # Consumption estimations (fractional hours)
+    def estimate_consumption(schedule):
         hourly_consumption = {h: 0.0 for h in range(24)}
 
         for d, start_hour in schedule.items():
-            lot = params[d]['LOT'] / 3600  # LOT in hours
-            duration = int(round(lot))  # Round to integer hours (simplified)
-            power = effective_devices[d].get('power', 1.5)
+            power_kw = effective_devices[d]['power']
+            duration_h = params[d]['LOT'] / 3600.0  # fractional hours
+            remaining = duration_h
+            hour = start_hour
 
-            # Mark hours where device consumes power
-            for h in range(start_hour, start_hour + duration):
-                if 0 <= h < 24:
-                    hourly_consumption[h] += power
+            # Spread the device’s energy use across hours
+            while remaining > 0:
+                dt = min(1.0, remaining)
+                hourly_consumption[hour % 24] += power_kw * dt
+                remaining -= dt
+                hour += 1
 
-        # Round all values to 2 decimals
-        hourly_consumption = {h: round(kW, 2) for h, kW in hourly_consumption.items()}
-
-        return hourly_consumption
+        # Round to 2 decimals
+        return {h: kW for h, kW in hourly_consumption.items()}
 
     # New function:
-    def estimate_real_consumption(df_day):
-        hourly_consumption = df_day.groupby(df_day.index.hour)['use [kW]'].mean()
+    def estimate_real_consumption():
+        hourly_consumption = df_day.groupby('hour')['use [kW]'].mean()
         hourly_consumption = hourly_consumption.reindex(range(24), fill_value=0)
-        return {hour: round(kW, 2) for hour, kW in hourly_consumption.items()}
+        return {hour: kW for hour, kW in hourly_consumption.items()}
 
-    default_cost = estimate_cost(default_schedule, effective_devices, params, load_profile, price_profile)
-    optimized_cost = estimate_cost(optimized_schedule, effective_devices, params, load_profile, price_profile)
+    default_cost = estimate_cost(default_schedule)
+    optimized_cost = estimate_cost(optimized_schedule)
 
-    default_consumption_real = estimate_real_consumption(df_day)
-    default_consumption = estimate_consumption(default_schedule, effective_devices, params)
-    optimized_consumption = estimate_consumption(optimized_schedule, effective_devices, params)
+    default_consumption_real = estimate_real_consumption()
+    default_consumption = estimate_consumption(default_schedule)
+    optimized_consumption = estimate_consumption(optimized_schedule)
 
     # Build response
     devices_info = {d: DeviceParams(w=v['w'], lambda_=v['lambda']) for d, v in effective_devices.items()}

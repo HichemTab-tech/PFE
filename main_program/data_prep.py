@@ -1,14 +1,6 @@
 import numpy as np
-import pandas as pd
 
 def extract_time_params(df, devices, usage_threshold=0.05):
-    """
-    Adds to each device:
-      - alpha, beta (sec)
-      - LOT        (sec)
-      - max_delay  (sec)
-      - m          (historical median start hour)
-    """
     wake_h, sleep_h = 5, 2
     if wake_h <= sleep_h:
         window = list(range(wake_h, sleep_h + 1))
