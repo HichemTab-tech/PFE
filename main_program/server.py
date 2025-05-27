@@ -1,7 +1,7 @@
 import numpy as np
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import Optional, Dict
+from typing import Optional, Dict, Any
 import pandas as pd
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -43,14 +43,68 @@ def build_price_profile():
     return pd.Series(prices_30min, index=range(SLOTS_PER_DAY))
 
 
-def build_load_profile(df_day, devices):
+# --- MODIFIED: build_load_profile to return individual device profiles ---
+def build_load_profile(df_day: pd.DataFrame, devices: Dict[str, Any]) -> (pd.Series, Dict[str, pd.Series]):
+    """
+    Builds the baseline load profile and individual device load profiles for the target day.
+
+    Returns:
+        tuple: (baseline_profile_kW, device_profiles_kW)
+            baseline_profile_kW: pd.Series mapping slot (0-47) -> avg kW for non-smart load
+            device_profiles_kW: Dict[device_name, pd.Series] mapping slot (0-47) -> avg kW for that device
+    """
+    # Ensure 'slot' column is available for grouping
+    # This line calculates the 30-minute slot index (0 to 47) for each row (each minute)
+    # based on its hour and minute.
+    # Example: 05:00-05:29 -> slot 10 (5*2), 05:30-05:59 -> slot 11 (5*2+1)
+    df_day['slot'] = df_day.index.hour * SLOTS_PER_HOUR + df_day.index.minute // SLOT_DURATION_MIN
+
+    # Get the total measured power consumption for each minute of the target day.
+    # This is the "real" total load column from your CSV.
     total = df_day["use [kW]"]
-    smart = df_day[[c for c in df_day.columns if any(d in c for d in devices)]].sum(axis=1)
-    baseline = total - smart
-    # Group by the new 30-min slot index
-    load_profile_slots = baseline.groupby(
-        df_day.index.hour * SLOTS_PER_HOUR + df_day.index.minute // SLOT_DURATION_MIN).mean()
-    return load_profile_slots
+
+    # Identify smart device columns
+    # This creates a list of column names from df_day that correspond to your defined smart devices.
+    # Example: ["Dishwasher [kW]", "Microwave [kW]", ...]
+    smart_device_cols = [c for c in df_day.columns if any(d in c for d in devices)]
+
+    # Calculate the sum of power consumption of *all* identified smart devices for each minute.
+    # This is the real, raw combined consumption of the smart devices on the target day.
+    smart_total = df_day[smart_device_cols].sum(axis=1)
+
+    # Calculate the baseline load for each minute by subtracting the sum of smart device loads
+    # from the total household load. This assumes that 'use [kW]' includes all loads,
+    # and the smart device columns are components of that total.
+    baseline = total - smart_total
+
+    # Group the calculated baseline load by 30-minute slot and take the mean (average) power for each slot.
+    # This gives you an average baseline consumption profile for the day.
+    baseline_profile_kW = baseline.groupby(df_day['slot']).mean()
+
+    # Reindex the baseline profile to ensure it has entries for all 48 slots (0-47).
+    # If a slot had no data (e.g., due to filtering or missing data), it will be filled with 0.
+    baseline_profile_kW = baseline_profile_kW.reindex(range(SLOTS_PER_DAY), fill_value=0)
+
+    # Initialize an empty dictionary to store the individual power profiles for each smart device.
+    device_profiles_kW = {}
+
+    # Loop through each smart device name provided in your `devices` configuration.
+    for dev_name in devices.keys():
+        # Find the actual column name in the DataFrame for the current device.
+        col = next((c for c in smart_device_cols if dev_name in c), None)
+        if col:
+            # If the device's column is found:
+            # Group that device's raw consumption by 30-minute slot and take the mean.
+            # This gives you the average power profile for that specific device for the day.
+            dev_profile = df_day[col].groupby(df_day['slot']).mean()
+            # Reindex to ensure all 48 slots, filling missing with 0 (meaning device was off or no data).
+            device_profiles_kW[dev_name] = dev_profile.reindex(range(SLOTS_PER_DAY), fill_value=0)
+        else:
+            # Fallback if a device from your JSON isn't found in the CSV (shouldn't happen often).
+            device_profiles_kW[dev_name] = pd.Series([0.0] * SLOTS_PER_DAY, index=range(SLOTS_PER_DAY))
+
+    # Return the calculated baseline profile and the dictionary of individual device profiles.
+    return baseline_profile_kW, device_profiles_kW
 
 
 # --- Request/Response models ---
@@ -97,7 +151,9 @@ async def generate_planning(req: PlanningRequest):
 
     params = extract_time_params(df_filtered, effective_devices)
     price_profile = build_price_profile()
-    load_profile = build_load_profile(df_filtered, effective_devices)
+
+    # MODIFIED: Get both baseline and individual device profiles
+    baseline_load_profile, device_load_profiles = build_load_profile(df_day, effective_devices)
 
     # --- UPDATED DEVICE POWER CALCULATION (On-Period Mean) ---
     # Define a threshold for what constitutes "active" usage
@@ -172,76 +228,55 @@ async def generate_planning(req: PlanningRequest):
     # IMPORTANT: The solver.run method expects a list of device names as its first argument
     optimized_schedule = solver.run(list(effective_devices.keys()), seed=42)
 
-    # Cost estimations (now operating on 30-min slots)
-    def estimate_cost(schedule):
+    # --- MODIFIED: Cost estimations using device_load_profiles for accuracy ---
+    def estimate_cost(schedule, baseline_profile, device_profiles, price_profile):
         device_cost = 0.0
         # 1) Cost for scheduled devices
-        for d, start_slot in schedule.items():  # h_slot is now a slot index
-            power_kw = P[d]
-            duration_s = LOT_s[d]
+        for d, start_slot in schedule.items():
+            dev_profile = device_profiles[d]
 
-            # This is a simplification: assuming cost is entire duration * price of start slot
-            # For a more accurate cost: sum(P[d] * (fraction of slot) * price_profile[current_slot] for each slot device is active)
-            # However, for total cost, it's simpler: total_energy * average_price_during_run
-            # Let's keep it simple for now, total energy * start slot price.
-            # OR better, if we want detailed:
-            current_time_in_s = 0  # seconds from start of device operation
-            for s_offset in range(SLOTS_PER_DAY):  # Iterate through possible slots
-                effective_slot = (start_slot + s_offset) % SLOTS_PER_DAY
+            # Determine how many slots the device's typical LOT (in seconds) spans.
+            # We use ceil because even a partial slot means the device is 'on' in that slot.
+            num_slots_for_LOT = int(np.ceil(LOT_s[d] / (SLOT_DURATION_MIN * 60.0)))
 
-                # Determine seconds device is ON in this slot
-                slot_start_s_from_device_start = s_offset * (SLOT_DURATION_MIN * 60)
-                slot_end_s_from_device_start = slot_start_s_from_device_start + (SLOT_DURATION_MIN * 60)
+            # Sum up energy for each slot the device is active based on its profile
+            for offset in range(num_slots_for_LOT):
+                current_slot = (start_slot + offset) % SLOTS_PER_DAY
 
-                # If this slot overlaps with device operation
-                if slot_start_s_from_device_start < duration_s:
-                    overlap_s = min(duration_s - slot_start_s_from_device_start, (SLOT_DURATION_MIN * 60))
-                    energy_in_slot_kwh = power_kw * (overlap_s / 3600.0)
-                    device_cost += energy_in_slot_kwh * price_profile[effective_slot]
-                else:
-                    break  # Device has finished operation
+                # Get the average power for this device in this historical slot
+                power_in_slot_kw = dev_profile.get(current_slot, 0.0)
+
+                # Energy = power (kW) * duration of slot (hours)
+                energy_kwh_in_slot = power_in_slot_kw * (SLOT_DURATION_MIN / 60.0)
+                device_cost += energy_kwh_in_slot * price_profile[current_slot]
 
         # 2) Baseline household load cost (now slot-by-slot)
-        # Ensure load_profile is indexed for all 48 slots and filled with 0 where no data
-        full_load_profile = load_profile.reindex(range(SLOTS_PER_DAY), fill_value=0)
+        # baseline_profile is already reindexed to all 48 slots with fill_value=0
         baseline_cost = sum(
-            full_load_profile[s] * price_profile[s]
+            baseline_profile[s] * price_profile[s] * (SLOT_DURATION_MIN / 60.0)
             for s in range(SLOTS_PER_DAY)
         )
         return device_cost + baseline_cost
 
-    # Consumption estimations (fractional slots)
-    def estimate_consumption(schedule):
-        # Initialize for all 30-min slots in a day
-        hourly_consumption = {s: 0.0 for s in range(SLOTS_PER_DAY)}
+    # --- MODIFIED: Consumption estimations using device_load_profiles for accuracy ---
+    def estimate_consumption(schedule, baseline_profile, device_profiles):
+        # Initialize with baseline consumption for all slots
+        # Ensure it's a mutable dict for additions
+        hourly_consumption = baseline_profile.reindex(range(SLOTS_PER_DAY), fill_value=0).to_dict()
 
         for d, start_slot in schedule.items():
-            power_kw = P[d]
-            duration_s = LOT_s[d]  # Duration in seconds
-            remaining_s = duration_s
-            current_slot = start_slot
+            dev_profile = device_profiles[d]
+            num_slots_for_LOT = int(np.ceil(LOT_s[d] / (SLOT_DURATION_MIN * 60.0)))
 
-            # Spread the device’s energy use across slots
-            while remaining_s > 0:
-                slot_duration_s = (SLOT_DURATION_MIN * 60)  # Full duration of one slot in seconds
+            # Spread the device’s average power from its profile across its scheduled slots
+            for offset in range(num_slots_for_LOT):
+                current_slot = (start_slot + offset) % SLOTS_PER_DAY
 
-                # How much of the current slot does the device consume?
-                # It's the minimum of remaining_s and the full slot duration.
-                duration_in_current_slot_s = min(remaining_s, slot_duration_s)
+                # Add the average power from its historical profile for this slot
+                # If the device wasn't active at this particular slot in its history, its profile entry will be 0.
+                hourly_consumption[current_slot] += dev_profile.get(current_slot, 0.0)
 
-                # Add consumption for this fraction of the slot (converted to kWh)
-                hourly_consumption[current_slot % SLOTS_PER_DAY] += power_kw * (duration_in_current_slot_s / 3600.0)
-
-                remaining_s -= duration_in_current_slot_s
-                current_slot += 1
-
-        # Add baseline load to simulated consumption
-        full_load_profile = load_profile.reindex(range(SLOTS_PER_DAY), fill_value=0)
-        for s in range(SLOTS_PER_DAY):
-            hourly_consumption[s] += full_load_profile[s]
-
-        # Round to 2 decimals
-        return {s: round(kW, 2) for s, kW in hourly_consumption.items()}
+        return {s: kW for s, kW in hourly_consumption.items()}
 
     # New function: estimate_real_consumption
     def estimate_real_consumption():
@@ -249,14 +284,15 @@ async def generate_planning(req: PlanningRequest):
         slot_consumption = df_day.groupby('slot')['use [kW]'].mean()
         # Reindex to ensure all 48 slots are present, fill missing with 0
         slot_consumption = slot_consumption.reindex(range(SLOTS_PER_DAY), fill_value=0)
-        return {slot: round(kW, 2) for slot, kW in slot_consumption.items()}
+        return {slot: kW for slot, kW in slot_consumption.items()}
 
-    default_cost = estimate_cost(default_schedule)
-    optimized_cost = estimate_cost(optimized_schedule)
+    # Pass the new profiles to the estimation functions
+    default_cost = estimate_cost(default_schedule, baseline_load_profile, device_load_profiles, price_profile)
+    optimized_cost = estimate_cost(optimized_schedule, baseline_load_profile, device_load_profiles, price_profile)
 
-    default_consumption_real = estimate_real_consumption()  # This is the actual historical load
-    default_consumption = estimate_consumption(default_schedule)
-    optimized_consumption = estimate_consumption(optimized_schedule)
+    default_consumption_real = estimate_real_consumption()
+    default_consumption = estimate_consumption(default_schedule, baseline_load_profile, device_load_profiles)
+    optimized_consumption = estimate_consumption(optimized_schedule, baseline_load_profile, device_load_profiles)
 
     # Build response
     devices_info = {d: DeviceParams(w=v['w'], lambda_=v['lambda']) for d, v in effective_devices.items()}
