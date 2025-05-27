@@ -20,7 +20,7 @@ class CsaSolver(Solver):
         return self.run_csa(params, seed=seed)
 
     def run_csa(self, devices,
-                n_crows=30, max_iter=500, P_aw=0.1, seed=None):
+                n_crows=30, max_iter=200, P_aw=0.1, seed=None):
         if seed is not None:
             np.random.seed(seed)
 
