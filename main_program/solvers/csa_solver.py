@@ -23,7 +23,7 @@ class CsaSolver(Solver):
         return self.run_csa(devices_to_schedule, seed=seed)
 
     def run_csa(self, devices, # This 'devices' parameter is the list of device names (e.g., ["Dishwasher [kW]", ...])
-                n_crows=150, max_iter=500, P_aw=0.3, seed=None):
+                n_crows=100, max_iter=10, P_aw=0.3, seed=None):
         if seed is not None:
             np.random.seed(seed)
 

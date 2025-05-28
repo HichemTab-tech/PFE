@@ -76,6 +76,7 @@ class PlanningRequest(BaseModel):
 
 
 class PlanningResponse(BaseModel):
+    slot_duration_min: int = SLOT_DURATION_MIN
     devices: Dict[str, DeviceParams]
     default_planning: Dict[str, int]
     optimized_planning: Dict[str, int]
@@ -144,11 +145,42 @@ async def generate_planning(req: PlanningRequest):
             valid_slots[d] = list(range(a, SLOTS_PER_DAY)) + list(range(0, b + 1))
 
     # Fitness function (solver will receive slot indices)
+    # Fitness function (solver will receive slot indices)
     def fitness(n_):
-        # This cost is for the solver's optimization, using simplified P and LOT_s
-        cost = sum(W[d] * (P[d] * LOT_s[d] / 3600.0) * price_profile.loc[n_[d]] for d in n_)
+        total_cost = 0.0  # Initialize total cost for the current schedule
+        # Calculate cost for each device based on its scheduled start slot
+        for d, start_slot in n_.items():
+            power_kw = P[d]  # The average power when active for this device on the target day
+            duration_s = LOT_s[d]  # Median duration in seconds for this device
+
+            # Determine how many 15-minute slots the device's LOT spans
+            num_slots_for_LOT = int(np.ceil(duration_s / (SLOT_DURATION_MIN * 60.0)))
+
+            device_energy_cost_d = 0.0
+            # Sum up energy cost for each slot the device is active
+            for offset in range(num_slots_for_LOT):
+                current_slot = (
+                                           start_slot + offset) % SLOTS_PER_DAY  # Handle wrap-around (e.g., runs past midnight)
+
+                # Calculate how many seconds of the device's duration fall into this specific slot
+                # This ensures partial slots at the end are handled correctly
+                seconds_in_current_slot = min(duration_s - offset * (SLOT_DURATION_MIN * 60.0),
+                                              SLOT_DURATION_MIN * 60.0)
+
+                # Energy (kWh) in this slot = Power (kW) * (Seconds in slot / 3600)
+                energy_kwh_in_slot = power_kw * (seconds_in_current_slot / 3600.0)
+
+                # Cost in this slot = Energy (kWh) * Price ($/kWh)
+                cost_in_slot = energy_kwh_in_slot * price_profile[current_slot]
+                device_energy_cost_d += cost_in_slot
+
+            # Apply the device's 'w' weight to its total energy cost
+            total_cost += W[d] * device_energy_cost_d
+
+        # Comfort term (remains the same)
         comfort = sum(L[d] * W[d] * (n_[d] - M[d]) ** 2 for d in n_)
-        return cost + comfort
+
+        return total_cost + comfort  # Return the combined objective
 
     # Select and run solver
     solver = SolverFactory(req.algorithm, fitness=fitness, params={
@@ -186,20 +218,37 @@ async def generate_planning(req: PlanningRequest):
 
     # --- Function to simulate consumption based on a generated schedule ---
     def simulate_consumption(schedule: Dict[str, int], baseline_profile: pd.Series,
-                             device_profiles: Dict[str, pd.Series], lot_seconds_map: Dict[str, float]) -> Dict[
-        int, float]:
-        hourly_consumption = baseline_profile.reindex(range(SLOTS_PER_DAY), fill_value=0).to_dict()
+                             lot_seconds_map: Dict[str, float], effective_power_map: Dict[str, float]) -> Dict[int, float]:
+        # Initialize with baseline consumption for all slots (average kW per slot)
+        consumption = baseline_profile.reindex(range(SLOTS_PER_DAY), fill_value=0).to_dict()
+
+        slot_duration_seconds = SLOT_DURATION_MIN * 60.0  # e.g., 15 * 60 = 900 seconds
 
         for d, start_slot in schedule.items():
-            dev_profile = device_profiles[d]
-            # Use the LOT_s from params for the simulation duration
-            num_slots_for_LOT = int(np.ceil(lot_seconds_map[d] / (SLOT_DURATION_MIN * 60.0)))
+            power_kw = effective_power_map[
+                d]  # This is the constant power (in kW) the device consumes during its LOT
+            duration_s = lot_seconds_map[d]  # Total duration of device operation in seconds (LOT_s)
 
-            for offset in range(num_slots_for_LOT):
-                current_slot = (start_slot + offset) % SLOTS_PER_DAY
-                hourly_consumption[current_slot] += dev_profile.get(current_slot, 0.0)
+            remaining_duration_s = duration_s  # Track how much of device's run-time is left
+            current_slot_offset = 0
 
-        return {s: round(kW, 2) for s, kW in hourly_consumption.items()}
+            while remaining_duration_s > 0:
+                current_slot_index = (start_slot + current_slot_offset) % SLOTS_PER_DAY
+
+                # Calculate how many seconds of the device's operation fall into this specific slot
+                # It's the minimum of remaining_duration_s and the full slot duration.
+                seconds_in_this_slot = min(remaining_duration_s, slot_duration_seconds)
+
+                # Add the average power contribution to the current slot's total average kW
+                # If device runs for 'seconds_in_this_slot' at 'power_kw', its average contribution
+                # to THIS slot's average power (kW) is 'power_kw * (fraction of slot it's active)'.
+                power_contribution_to_slot = power_kw * (seconds_in_this_slot / slot_duration_seconds)
+                consumption[current_slot_index] += power_contribution_to_slot
+
+                remaining_duration_s -= seconds_in_this_slot
+                current_slot_offset += 1
+
+        return {s: round(kW, 2) for s, kW in consumption.items()}
 
     # --- Function to simulate cost based on a generated schedule ---
     def simulate_cost(schedule: Dict[str, int], baseline_profile: pd.Series, price_profile: pd.Series,
@@ -229,7 +278,7 @@ async def generate_planning(req: PlanningRequest):
     default_cost = calculate_actual_cost_from_profiles(baseline_load_profile, device_load_profiles, price_profile)
 
     # optimized_consumption: This is the simulated consumption based on the optimizer's schedule
-    optimized_consumption = simulate_consumption(optimized_schedule, baseline_load_profile, device_load_profiles, LOT_s)
+    optimized_consumption = simulate_consumption(optimized_schedule, baseline_load_profile, LOT_s, P)
 
     # optimized_cost: This is the simulated cost based on the optimizer's schedule
     optimized_cost = simulate_cost(optimized_schedule, baseline_load_profile, price_profile, LOT_s, P)
