@@ -11,6 +11,13 @@ from data_prep import SLOT_DURATION_MIN, SLOTS_PER_HOUR, SLOTS_PER_DAY, extract_
 from main_program.solvers import SolverFactory
 
 
+# --- Global Data Loading (Load once when module is imported) ---
+# Use leading underscore to indicate these are internal module-level globals
+_df = load_csv_data("HomeC.csv")
+_devices = load_devices("devices_with_w.json", "HomeC.csv")
+# -------------------------------------------------------------
+
+
 def build_price_profile():
     """Build a price profile for the day with hourly variations."""
     prices_hourly = [0.10] * 7 + [0.20] * 4 + [0.15] * 6 + [0.22] * 2 + [0.10] * 5
@@ -22,7 +29,7 @@ def build_price_profile():
 def build_load_profile(df_day: pd.DataFrame, devices: Dict[str, Any]) -> (pd.Series, Dict[str, pd.Series]):
     """Build baseline and device-specific load profiles from daily data."""
     df_day['slot'] = df_day.index.hour * SLOTS_PER_HOUR + df_day.index.minute // SLOT_DURATION_MIN
-
+    #df_day.loc[:, 'slot'] = df_day.index.hour * SLOTS_PER_HOUR + df_day.index.minute // SLOT_DURATION_MIN
     total = df_day["use [kW]"]
     smart_device_cols = [c for c in df_day.columns if any(d in c for d in devices)]
     smart_total = df_day[smart_device_cols].sum(axis=1)
@@ -213,11 +220,13 @@ class PlanningResponse(BaseModel):
     default_consumption: Dict[int, float]
     optimized_consumption: Dict[int, float]
 
-def generate_planning(date, start_hour=0, algorithm='csa'):
+def generate_planning(date="2016-01-05", start_hour=0, algorithm='csa', max_iter=100):
+    print(f"Calculating planning data for {date} with {algorithm.upper()}...")
 
-    # --- Load data once on server startup ---
-    df = load_csv_data("HomeC.csv")
-    devices = load_devices("devices_with_w.json", "HomeC.csv")
+    # Access global dataframes
+    global _df, _devices  # Declare global usage for clarity, though not strictly needed for read-only access
+    df = _df
+    devices = _devices
 
     target = pd.to_datetime(date).date()
     df_day = df[df.index.date == target]
@@ -231,6 +240,7 @@ def generate_planning(date, start_hour=0, algorithm='csa'):
         df_day.index.hour * SLOTS_PER_HOUR + df_day.index.minute // SLOT_DURATION_MIN >= start_slot_filter]
 
     df_day['slot'] = df_day.index.hour * SLOTS_PER_HOUR + df_day.index.minute // SLOT_DURATION_MIN
+    #df_day.loc[:, 'slot'] = df_day.index.hour * SLOTS_PER_HOUR + df_day.index.minute // SLOT_DURATION_MIN
     df_filtered['slot'] = df_filtered.index.hour * SLOTS_PER_HOUR + df_filtered.index.minute // SLOT_DURATION_MIN
 
     params = extract_time_params(df_filtered, effective_devices)
@@ -262,7 +272,7 @@ def generate_planning(date, start_hour=0, algorithm='csa'):
         'α': α, 'β': β, 'LOT': LOT_s, 'P': P_for_solver, 'W': W, 'L': L, 'M': M, 'valid_hours': valid_slots
         # Pass P_for_solver
     })
-    optimized_schedule = solver.run(list(effective_devices.keys()), seed=42)
+    optimized_schedule = solver.run(list(effective_devices.keys()), seed=42, max_iter=max_iter)
 
     # Calculation functions moved to optimization_logic.py
 
@@ -288,14 +298,17 @@ def generate_planning(date, start_hour=0, algorithm='csa'):
     # Build response
     devices_info = {d: DeviceParams(w=v['w'], lambda_=v['lambda']) for d, v in effective_devices.items()}
 
+    print(optimized_consumption)
 
-    return PlanningResponse(
-        devices=devices_info,
-        default_planning=default_schedule_for_display,
-        optimized_planning=optimized_schedule,
-        default_cost=default_cost,
-        optimized_cost=optimized_cost,
-        default_consumption_real=default_consumption_real,
-        default_consumption=default_consumption,
-        optimized_consumption=optimized_consumption,
-    )
+    return {
+        "slot_duration_min": SLOT_DURATION_MIN,
+        "devices_info": devices_info, # Keeping the full device info for potential display
+        "default_planning": default_schedule_for_display,
+        "optimized_planning": optimized_schedule,
+        "default_cost": default_cost,
+        "optimized_cost": optimized_cost,
+        "default_consumption_real": default_consumption_real,
+        "default_consumption": default_consumption,
+        "optimized_consumption": optimized_consumption,
+        "price_profile": price_profile.to_dict() # Convert to dict for easier passing
+    }

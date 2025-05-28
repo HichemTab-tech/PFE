@@ -23,7 +23,7 @@ class GaSolver(Solver):
         self.crossover_rate= crossover_rate
         self.mutation_rate = mutation_rate
 
-    def run(self, devices, seed=None):
+    def run(self, devices, seed=None, max_iter=10):
         return self._run_ga(devices, seed=seed)
 
     def _run_ga(self, devices, seed=None):

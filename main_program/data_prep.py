@@ -1,6 +1,5 @@
 # data_prep.py
 import numpy as np
-import pandas as pd
 
 # --- New Constants ---
 SLOT_DURATION_MIN = 15

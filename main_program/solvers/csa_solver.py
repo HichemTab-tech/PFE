@@ -18,12 +18,12 @@ class CsaSolver(Solver):
         self.devices = list(self.params['α'].keys())
 
     # Corrected 'run' signature: it now expects 'devices' (list of names) not 'params'
-    def run(self, devices_to_schedule, seed=None):
+    def run(self, devices_to_schedule, seed=None, max_iter=10):
         # delegate directly to run_csa, passing the list of device names
-        return self.run_csa(devices_to_schedule, seed=seed)
+        return self.run_csa(devices_to_schedule, seed=seed, max_iter=max_iter)
 
     def run_csa(self, devices, # This 'devices' parameter is the list of device names (e.g., ["Dishwasher [kW]", ...])
-                n_crows=150, max_iter=600, P_aw=0.3, seed=None):
+                n_crows=150, max_iter=10, P_aw=0.3, seed=None):
         if seed is not None:
             np.random.seed(seed)
 
