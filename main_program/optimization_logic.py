@@ -33,10 +33,6 @@ def build_price_profile():
             [4.5] * 2  # 22:00–24:00
     )
 
-    # Assuming 4 slots per hour (15-minute intervals)
-    SLOTS_PER_HOUR = 4
-    SLOTS_PER_DAY = 24 * SLOTS_PER_HOUR
-
     prices_slotted = []
     for p_h in prices_hourly:
         prices_slotted.extend([p_h] * SLOTS_PER_HOUR)
