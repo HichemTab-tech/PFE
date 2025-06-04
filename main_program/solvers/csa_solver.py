@@ -23,7 +23,8 @@ class CsaSolver(Solver):
         return self.run_csa(devices_to_schedule, seed=seed, max_iter=max_iter)
 
     def run_csa(self, devices, # This 'devices' parameter is the list of device names (e.g., ["Dishwasher [kW]", ...])
-                n_crows=150, max_iter=10, P_aw=0.3, seed=None):
+                n_crows=150, max_iter=10, P_aw=0.3, seed=None, FL=1):
+        max_iter=100
         if seed is not None:
             np.random.seed(seed)
 
@@ -43,7 +44,10 @@ class CsaSolver(Solver):
             for k in range(n_crows):
                 j = np.random.choice([i for i in range(n_crows) if i != k])
                 if np.random.rand() > P_aw:
-                    η_new = {d: memories[j][d] for d in devices}
+                    η_new = {
+                        d: memories[j][d] if np.random.rand() < FL else population[k][d]
+                        for d in devices
+                    }
                 else:
                     η_new = {d: int(np.random.choice(self.params['valid_hours'][d])) for d in devices}
 
