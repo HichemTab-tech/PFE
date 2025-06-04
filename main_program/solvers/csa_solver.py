@@ -1,7 +1,6 @@
 # solvers/csa_solver.py
-import sys
 import numpy as np
-# sys.path.append('../../main_program') # Consider if this path is truly necessary; remove if not needed.
+# sys.path.append('../../main_program') # REMOVED: Assumed relative imports work with correct package structure
 
 from .base import Solver
 
@@ -18,43 +17,46 @@ class CsaSolver(Solver):
         self.devices = list(self.params['α'].keys())
 
     # Corrected 'run' signature: it now expects 'devices' (list of names) not 'params'
-    def run(self, devices_to_schedule, seed=None, max_iter=10):
+    def run(self, devices_to_schedule: list, seed: int = None, max_iter: int = 100):  # Updated default max_iter
         # delegate directly to run_csa, passing the list of device names
         return self.run_csa(devices_to_schedule, seed=seed, max_iter=max_iter)
 
-    def run_csa(self, devices, # This 'devices' parameter is the list of device names (e.g., ["Dishwasher [kW]", ...])
-                n_crows=150, max_iter=10, P_aw=0.3, seed=None, FL=1):
-        max_iter=100
+    def run_csa(self, devices: list,
+                # This 'devices' parameter is the list of device names (e.g., ["Dishwasher [kW]", ...])
+                n_crows: int = 150, P_aw: float = 0.3, seed: int = None, FL: int = 1,
+                max_iter: int = 100):  # max_iter added here
+
         if seed is not None:
             np.random.seed(seed)
 
         population = []
         memories = []
         for _ in range(n_crows):
-            # η = {d: int(np.random.choice(valid_hours[d])) for d in devices}
-            # Use self.params correctly for α (alpha_slot), W, valid_hours (valid_slots)
-            η = {d: (self.params['α'][d] if self.params['W'][d] == 0 else int(np.random.choice(self.params['valid_hours'][d]))) for d in devices}
+            η = {d: (self.params['α'][d] if self.params['W'][d] == 0 else int(
+                np.random.choice(self.params['valid_hours'][d]))) for d in devices}
             population.append(η.copy())
             memories.append(η.copy())
 
         best_mem = min(memories, key=self.fitness)
         best_fit = self.fitness(best_mem)
+        fitness_history = [best_fit]  # Initialize fitness history
 
         for _ in range(max_iter):
             for k in range(n_crows):
                 j = np.random.choice([i for i in range(n_crows) if i != k])
                 if np.random.rand() > P_aw:
-                    η_new = {
-                        d: memories[j][d] if np.random.rand() < FL else population[k][d]
-                        for d in devices
-                    }
+                    # η_new = {
+                    #     d: memories[j][d] if np.random.rand() < FL else population[k][d]
+                    #     for d in devices
+                    # }
+                    η_new = {d: memories[j][d] for d in devices}
                 else:
                     η_new = {d: int(np.random.choice(self.params['valid_hours'][d])) for d in devices}
 
                 # enforce immovable (w=0) → lock at α[d]
                 for d in η_new:
                     if self.params['W'][d] == 0:
-                        η_new[d] = self.params['α'][d] # Use alpha_slot
+                        η_new[d] = self.params['α'][d]  # Use alpha_slot
 
                 if self.fitness(η_new) < self.fitness(memories[k]):
                     memories[k] = η_new.copy()
@@ -63,5 +65,6 @@ class CsaSolver(Solver):
                     if f_new < best_fit:
                         best_fit = f_new
                         best_mem = η_new.copy()
+            fitness_history.append(best_fit)  # Append best fitness of current iteration
 
-        return best_mem
+        return best_mem, fitness_history  # Return schedule AND history
