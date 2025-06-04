@@ -19,8 +19,24 @@ _devices = load_devices("devices_with_w.json", "HomeC.csv")
 
 
 def build_price_profile():
-    """Build a price profile for the day with hourly variations."""
-    prices_hourly = [0.10] * 7 + [0.20] * 4 + [0.15] * 6 + [0.22] * 2 + [0.10] * 5
+    """Build a price profile for the day with hourly variations based on Algeria's electricity pricing."""
+    # Define hourly prices in DZD per kWh
+    # Assuming:
+    # - Off-peak (0:00–6:00): 4.5 DZD
+    # - Mid-peak (6:00–18:00): 5.0 DZD
+    # - Peak (18:00–22:00): 6.0 DZD
+    # - Off-peak (22:00–24:00): 4.5 DZD
+    prices_hourly = (
+            [4.5] * 6 +  # 0:00–6:00
+            [5.0] * 12 +  # 6:00–18:00
+            [6.0] * 4 +  # 18:00–22:00
+            [4.5] * 2  # 22:00–24:00
+    )
+
+    # Assuming 4 slots per hour (15-minute intervals)
+    SLOTS_PER_HOUR = 4
+    SLOTS_PER_DAY = 24 * SLOTS_PER_HOUR
+
     prices_slotted = []
     for p_h in prices_hourly:
         prices_slotted.extend([p_h] * SLOTS_PER_HOUR)
