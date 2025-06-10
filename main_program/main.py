@@ -39,6 +39,15 @@ def plot_total_consumption_results(results: Dict[str, Any]):
         max(optimized_consumption.values())
     ) * 1.1  # Add a little buffer
 
+    # Add picLimit line if it exists
+    picLimit = results.get("picLimit")
+    if picLimit is not None:
+        fig.add_hline(y=picLimit, line_dash="dash", line_color="firebrick",
+                      annotation_text=f"Peak Limit ({picLimit} kW)",
+                      annotation_position="bottom right")
+        max_consumption_value = max(max_consumption_value, picLimit * 1.1)
+
+
     price_colors = {
         1.2050: "rgba(144, 238, 144, 0.2)",  # Light green
         2.1645: "rgba(255, 255, 0, 0.2)",  # Yellow
@@ -115,7 +124,7 @@ def plot_total_consumption_results(results: Dict[str, Any]):
             ticktext=[x_labels[i] for i in range(0, SLOTS_PER_DAY, SLOTS_PER_HOUR * 2)],
             showgrid=True, gridwidth=1, gridcolor='rgba(0,0,0,0.05)'
         ),
-        yaxis=dict(showgrid=True, gridwidth=1, gridcolor='rgba(0,0,0,0.05)')
+        yaxis=dict(showgrid=True, gridwidth=1, gridcolor='rgba(0,0,0,0.05)', range=[0, max_consumption_value])
     )
     fig.show()
 
@@ -269,9 +278,13 @@ def plot_individual_device_schedules(
 
 def main():
     try:
-        # Pass max_iter to generate_planning, which passes it to solvers
-        planning_results = generate_planning(date, algorithm='csa',
-                                             max_iter=100)  # Increased max_iter for better optimization history
+        # Pass max_iter and new picLimit to generate_planning
+        planning_results = generate_planning(
+            date,
+            algorithm='csa',
+            max_iter=100,
+            picLimit=1.5  # NEW: Enforce a 3.5 kW peak consumption limit
+        )
         planning_results['target_date_str'] = date  # Add target date to results for plot title
 
         print("\n--- Planning Results ---")

@@ -9,7 +9,10 @@ from pydantic import BaseModel
 from data_import import load_csv_data, load_devices
 # Import constants directly from data_prep for consistency
 from data_prep import SLOT_DURATION_MIN, SLOTS_PER_HOUR, SLOTS_PER_DAY, extract_time_params
-from solvers import SolverFactory  # Corrected import path
+# REMOVED: from solvers import SolverFactory
+# ADDED: Direct solver imports
+from solvers.csa_solver import CsaSolver
+from solvers.ga_solver import GaSolver
 
 # --- Global Data Loading (Load once when module is imported) ---
 _df = load_csv_data("HomeC.csv")
@@ -278,8 +281,8 @@ class PlanningResponse(BaseModel):
     device_parameters: Dict[str, Any]  # New field for plotting device ranges
 
 
-def generate_planning(date: str = "2016-01-05", start_hour: int = 0, algorithm: str = 'csa', max_iter: int = 100) -> \
-        Dict[str, Any]:
+def generate_planning(date: str = "2016-01-05", start_hour: int = 0, algorithm: str = 'csa', max_iter: int = 100,
+                      picLimit: Optional[float] = None) -> Dict[str, Any]:
     print(f"Calculating planning data for {date} with {algorithm.upper()}...")
 
     # Access global dataframes
@@ -334,7 +337,7 @@ def generate_planning(date: str = "2016-01-05", start_hour: int = 0, algorithm: 
             # This is the simple case. We just take all original slots that are >= m_slot.
             # This also correctly handles wrapping windows where m_slot is in the "late" part (e.g., alpha=22, m=23)
             filtered_list = [s for s in slots_in_original_window if s >= m_slot]
-        else: # alpha_slot > m_slot
+        else:  # alpha_slot > m_slot
             # Case 2: The window wraps and the median start time is in the "early" part (e.g., alpha=22, m=1).
             # We must only take slots that are also in the "early" part and are >= m_slot.
             filtered_list = [s for s in slots_in_original_window if s >= m_slot and s < alpha_slot]
@@ -342,7 +345,7 @@ def generate_planning(date: str = "2016-01-05", start_hour: int = 0, algorithm: 
         # 3. Safeguard: If filtering removes all options, the only valid move is to not move at all.
         if not filtered_list:
             if m_slot in slots_in_original_window:
-                 constrained_valid_slots[d] = [m_slot]
+                constrained_valid_slots[d] = [m_slot]
             else:
                 # If m_slot itself wasn't valid, there are no valid forward moves.
                 # Fallback to the first available slot in the original window that is after m_slot.
@@ -351,7 +354,7 @@ def generate_planning(date: str = "2016-01-05", start_hour: int = 0, algorithm: 
                 # Let's find the first valid original slot. If it's empty, use m_slot.
                 if slots_in_original_window:
                     constrained_valid_slots[d] = [slots_in_original_window[0]]
-                else: # No original slots, very rare.
+                else:  # No original slots, very rare.
                     constrained_valid_slots[d] = [m_slot]
                 print(f"Warning: For device '{d}', no slots in window [α={α[d]}, β={β[d]}] are "
                       f"at or after m_slot={m_slot}. Falling back to earliest valid option.")
@@ -361,9 +364,98 @@ def generate_planning(date: str = "2016-01-05", start_hour: int = 0, algorithm: 
 
     fitness = create_fitness_function(P_for_solver, LOT_s, W, L, M, price_profile)
 
-    solver = SolverFactory(algorithm, fitness=fitness, params={
-        'α': α, 'β': β, 'LOT': LOT_s, 'P': P_for_solver, 'W': W, 'L': L, 'M': M, 'valid_hours': constrained_valid_slots
-    })
+    # --- NEW: Create a repair function for picLimit constraint ---
+    repair_function = lambda s: s  # Default identity function
+    if picLimit is not None:
+        print(f"Enforcing peak consumption limit of {picLimit} kW.")
+
+        # This closure captures necessary variables from its defining scope (W, P_for_solver, etc.)
+        def adjust_schedule_for_pic_limit(schedule: Dict[str, int]) -> Dict[str, int]:
+            immovable_devices = {d: s for d, s in schedule.items() if W.get(d, 1) == 0}
+            movable_schedule = {d: s for d, s in schedule.items() if W.get(d, 1) != 0}
+
+            # Start with baseline and add consumption from all immovable devices
+            total_consumption = baseline_load_profile.copy().to_numpy()
+            for device, start_slot in immovable_devices.items():
+                power_kw = P_for_solver[device]
+                duration_s = LOT_s[device]
+                num_slots = int(np.ceil(duration_s / (SLOT_DURATION_MIN * 60.0)))
+                if num_slots == 0: continue
+                for offset in range(num_slots):
+                    slot_idx = (start_slot + offset) % SLOTS_PER_DAY
+                    total_consumption[slot_idx] += power_kw
+
+            # Iteratively place movable devices, adjusting start times to respect picLimit
+            repaired_movable_schedule = {}
+            devices_to_place = sorted(movable_schedule.keys(), key=lambda d: movable_schedule[d])
+
+            for device in devices_to_place:
+                power_kw = P_for_solver[device]
+                duration_s = LOT_s[device]
+                num_slots = int(np.ceil(duration_s / (SLOT_DURATION_MIN * 60.0)))
+
+                if num_slots == 0:
+                    repaired_movable_schedule[device] = movable_schedule[device]
+                    continue
+
+                device_valid_slots = constrained_valid_slots[device]
+                proposed_start_slot = movable_schedule[device]
+
+                # Create a list of valid slots to try, starting from the proposed one
+                try:
+                    start_index = device_valid_slots.index(proposed_start_slot)
+                    slots_to_try = device_valid_slots[start_index:] + device_valid_slots[:start_index]
+                except (ValueError, IndexError):  # Fallback if proposed is not in valid list
+                    slots_to_try = device_valid_slots
+                    if not slots_to_try:
+                        repaired_movable_schedule[device] = proposed_start_slot
+                        continue
+
+                found_placement = False
+                for try_slot in slots_to_try:
+                    is_violation = False
+                    for offset in range(num_slots):
+                        slot_idx = (try_slot + offset) % SLOTS_PER_DAY
+                        if total_consumption[slot_idx] + power_kw > picLimit:
+                            is_violation = True
+                            break
+                    if not is_violation:
+                        repaired_movable_schedule[device] = try_slot
+                        for offset in range(num_slots):
+                            slot_idx = (try_slot + offset) % SLOTS_PER_DAY
+                            total_consumption[slot_idx] += power_kw
+                        found_placement = True
+                        break
+
+                if not found_placement:
+                    # If no slot works, place it at the last valid option. The high fitness
+                    # cost from comfort penalty will likely eliminate this solution.
+                    last_resort_slot = slots_to_try[-1] if slots_to_try else proposed_start_slot
+                    repaired_movable_schedule[device] = last_resort_slot
+                    for offset in range(num_slots):
+                        slot_idx = (last_resort_slot + offset) % SLOTS_PER_DAY
+                        total_consumption[slot_idx] += power_kw
+
+            # Combine immovable and repaired movable schedules
+            final_schedule = immovable_devices.copy()
+            final_schedule.update(repaired_movable_schedule)
+            return final_schedule
+
+        repair_function = adjust_schedule_for_pic_limit
+    # -------------------------------------------------------------
+
+    solver_params = {
+        'α': α, 'β': β, 'LOT': LOT_s, 'P': P_for_solver, 'W': W, 'L': L, 'M': M,
+        'valid_hours': constrained_valid_slots
+    }
+
+    if algorithm == 'csa':
+        solver = CsaSolver(fitness=fitness, params=solver_params, repair_function=repair_function)
+    elif algorithm == 'ga':
+        solver = GaSolver(fitness=fitness, params=solver_params, repair_function=repair_function)
+    else:
+        raise ValueError(f"Unknown algorithm: {algorithm}")
+
     optimized_schedule, fitness_history = solver.run(list(effective_devices.keys()), seed=42, max_iter=max_iter)
 
     default_consumption_real = df_day.groupby('slot')['use [kW]'].mean().reindex(range(SLOTS_PER_DAY),
@@ -399,4 +491,5 @@ def generate_planning(date: str = "2016-01-05", start_hour: int = 0, algorithm: 
         "device_parameters": device_plot_params,
         "default_individual_consumption": default_individual_consumption,
         "optimized_individual_consumption": optimized_individual_consumption,
+        "picLimit": picLimit,  # Pass picLimit to results for plotting
     }

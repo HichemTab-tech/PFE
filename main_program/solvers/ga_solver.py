@@ -1,5 +1,5 @@
 import random
-# sys.path.append('../../main_program') # REMOVED: Assumed relative imports work with correct package structure
+from typing import Callable  # Added for repair_function typing
 
 from .base import Solver
 
@@ -7,7 +7,7 @@ from .base import Solver
 def _crossover(p1: dict, p2: dict):
     """Single-point crossover over the list of devices."""
     keys = list(p1.keys())
-    pt   = random.randint(1, len(keys) - 1)
+    pt = random.randint(1, len(keys) - 1)
     c1, c2 = {}, {}
     for i, d in enumerate(keys):
         if i < pt:
@@ -19,24 +19,27 @@ def _crossover(p1: dict, p2: dict):
 
 class GaSolver(Solver):
     def __init__(
-        self,
-        fitness,
-        params: dict,
-        pop_size: int = 50,
-        generations: int = 100,
-        crossover_rate: float = 0.8,
-        mutation_rate: float = 0.1,
+            self,
+            fitness,
+            params: dict,
+            pop_size: int = 50,
+            generations: int = 100,
+            crossover_rate: float = 0.8,
+            mutation_rate: float = 0.1,
+            repair_function: Callable = None,  # ADDED: Repair function for constraints
     ):
         # fitness: a callable mapping schedule→cost (lower is better)
         # params: dict with keys 'α', 'beta', 'valid_hours', 'W', etc.
-        self.fitness       = fitness
-        self.params        = params
-        self.pop_size      = pop_size
-        self.generations   = generations
-        self.crossover_rate= crossover_rate
+        self.fitness = fitness
+        self.params = params
+        self.pop_size = pop_size
+        self.generations = generations
+        self.crossover_rate = crossover_rate
         self.mutation_rate = mutation_rate
+        # ADDED: Store repair function, defaulting to an identity function if None
+        self.repair_function = repair_function if repair_function else lambda s: s
 
-    def run(self, devices: list, seed: int = None, max_iter: int = 100): # Updated default max_iter
+    def run(self, devices: list, seed: int = None, max_iter: int = 100):  # Updated default max_iter
         # max_iter is used as generations in GA context
         self.generations = max_iter
         return self._run_ga(devices, seed=seed)
@@ -58,9 +61,9 @@ class GaSolver(Solver):
             population.append(indiv.copy())
 
         # 2. Find initial best
-        best       = min(population, key=self.fitness)
+        best = min(population, key=self.fitness)
         best_score = self.fitness(best)
-        fitness_history = [best_score] # Initialize fitness history
+        fitness_history = [best_score]  # Initialize fitness history
 
         # 3. Evolve for given generations
         for _ in range(self.generations):
@@ -81,6 +84,10 @@ class GaSolver(Solver):
                 self._mutate(c1)
                 self._mutate(c2)
 
+                # ADDED: Repair children to satisfy hard constraints (like picLimit)
+                c1 = self.repair_function(c1)
+                c2 = self.repair_function(c2)
+
                 new_pop.extend([c1, c2])
 
             # if odd, carry the best over
@@ -94,9 +101,9 @@ class GaSolver(Solver):
                 score = self.fitness(indiv)
                 if score < best_score:
                     best_score, best = score, indiv.copy()
-            fitness_history.append(best_score) # Append best fitness of current generation
+            fitness_history.append(best_score)  # Append best fitness of current generation
 
-        return best, fitness_history # Return schedule AND history
+        return best, fitness_history  # Return schedule AND history
 
     def _tournament_selection(self, population: list, k: int = 3):
         """Pick k random schedules and return the one with lowest cost."""
