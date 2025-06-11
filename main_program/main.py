@@ -135,7 +135,7 @@ def plot_fitness_evolution(fitness_history: List[float], algorithm_name: str):
     fig.update_layout(
         title_text=f"Fitness Evolution for {algorithm_name.upper()} Algorithm",
         xaxis_title="Iteration/Generation",
-        yaxis_title="Fitness Value (Cost + Comfort)",
+        yaxis_title="Fitness Value (Cost)",
         hovermode="x unified",
         margin=dict(l=40, r=40, t=80, b=40),
         yaxis=dict(type='log')  # Fitness can vary greatly, log scale can help
@@ -149,15 +149,17 @@ def plot_individual_device_schedules(
         default_individual_consumption: Dict[str, Dict[int, float]],  # Pass the actual consumption profiles
         optimized_individual_consumption: Dict[str, Dict[int, float]]  # Pass the actual consumption profiles
 ):
-    num_devices = len(device_parameters)
+    # MODIFIED: Plot only active devices for the day
+    active_devices = {k: v for k, v in device_parameters.items() if v.get('LOT', 0) > 0}
+    num_devices = len(active_devices)
     if num_devices == 0:
-        print("No devices to plot.")
+        print("No active devices to plot for this day.")
         return
 
     rows = int(np.ceil(num_devices / 2))  # Arrange in 2 columns
 
     fig = make_subplots(rows=rows, cols=2,
-                        subplot_titles=list(device_parameters.keys()),
+                        subplot_titles=list(active_devices.keys()),
                         vertical_spacing=0.08,
                         horizontal_spacing=0.05)
 
@@ -167,107 +169,84 @@ def plot_individual_device_schedules(
         minute = (i % SLOTS_PER_HOUR) * SLOT_DURATION_MIN
         x_labels.append(f"{hour:02d}:{minute:02d}")
 
-    # This list will be used for customdata for hover templates
     x_slot_indices = list(range(SLOTS_PER_DAY))
 
-    # Add dummy traces for a combined legend across subplots
+    # MODIFIED: Update dummy traces for legend; remove historical ones
     fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines',
                              marker=dict(symbol='star', size=10, color='purple'),
                              line=dict(color='purple', width=0),
-                             name='Median Historical Start', showlegend=True), row=1, col=1)
+                             name='Original Start Time', showlegend=True), row=1, col=1)
     fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines',
                              line=dict(color="blue", width=2, dash='dot', shape='hv'),
-                             name='Default Simulated Consumption', showlegend=True), row=1, col=1)
+                             name='Original Consumption', showlegend=True), row=1, col=1)
     fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines',
                              line=dict(color="red", width=2, dash='solid', shape='hv'),
-                             name='Optimized Simulated Consumption', showlegend=True), row=1, col=1)
-    fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines',
-                             line=dict(color="rgba(173, 216, 230, 0.4)", width=10),
-                             name='Historical Operation Window', showlegend=True), row=1, col=1)
+                             name='Optimized Consumption', showlegend=True), row=1, col=1)
 
     row_idx, col_idx = 1, 1
-    for i, (dev_name, params) in enumerate(device_parameters.items()):
-        alpha_slot = params['alpha_slot']
-        beta_slot = params['beta_slot']
-        m_slot = int(round(params['m_slot']))  # Median slot
-        dev_power = params['power_for_solver']  # Effective power for the solver
+    for i, (dev_name, params) in enumerate(active_devices.items()):
+        # MODIFIED: Use new parameters; no alpha, beta, or m_slot
+        actual_start_slot = params['actual_start_slot']
+        dev_power = params['power_for_solver']
 
-        # Max Y for annotations and plot range
-        max_y_val = max(dev_power * 1.2, 0.1)  # Ensure at least some height, even for 0 power devices
+        max_y_val = max(dev_power * 1.2, 0.1)
 
-        # Shade the valid historical operating window (alpha to beta)
-        if alpha_slot <= beta_slot:
-            fig.add_shape(
-                type="rect",
-                x0=alpha_slot, x1=beta_slot + 1, y0=0, y1=max_y_val,
-                fillcolor="rgba(173, 216, 230, 0.15)",  # Light blue shade
-                line_width=0,
-                row=row_idx, col=col_idx,
-                name="Historical Window",
-            )
-        else:  # Window wraps around midnight
-            fig.add_shape(type="rect", x0=alpha_slot, x1=SLOTS_PER_DAY, y0=0, y1=max_y_val,
-                          fillcolor="rgba(173, 216, 230, 0.15)", line_width=0, row=row_idx, col=col_idx)
-            fig.add_shape(type="rect", x0=0, x1=beta_slot + 1, y0=0, y1=max_y_val,
-                          fillcolor="rgba(173, 216, 230, 0.15)", line_width=0, row=row_idx, col=col_idx)
+        # REMOVED: Shading for historical operating window (alpha to beta) is no longer relevant.
 
-        # Add a marker for m_slot (median historical start)
+        # MODIFIED: Add a marker for the original start time on the target day.
         fig.add_trace(go.Scatter(
-            x=[m_slot], y=[max_y_val * 0.9], mode='markers',
+            x=[actual_start_slot], y=[max_y_val * 0.9], mode='markers',
             marker=dict(symbol='star', size=10, color='purple'),
-            name='Median Historical Start',
-            customdata=[x_labels[m_slot]],  # Single custom data point for the marker
-            hovertemplate=f"Median Start: {dev_name}<br>Slot: %{{x}}<br>Time: %{{customdata}}<extra></extra>",
+            name='Original Start Time',
+            customdata=[x_labels[actual_start_slot]],
+            hovertemplate=f"Original Start: {dev_name}<br>Slot: %{{x}}<br>Time: %{{customdata}}<extra></extra>",
             showlegend=False
         ), row=row_idx, col=col_idx)
 
-        # Plot Default Simulated Consumption (using stepped line)
-        # The consumption data already contains 0s for off slots, so it's ready for plotting.
+        # Plot Original Daily Consumption (using stepped line)
         default_profile_data = default_individual_consumption.get(dev_name, {s: 0.0 for s in x_slot_indices})
-        default_y = [default_profile_data.get(s, 0.0) for s in x_slot_indices]  # Ensure all slots covered
+        default_y = [default_profile_data.get(s, 0.0) for s in x_slot_indices]
 
         fig.add_trace(go.Scatter(
             x=x_slot_indices, y=default_y, mode='lines',
-            line=dict(color="blue", width=2, dash='dot', shape='hv'),  # 'hv' for horizontal-vertical steps
-            name='Default Simulated Consumption',
-            customdata=x_labels,  # Pass HH:MM labels for all slots
-            hovertemplate=f"Default ON: {dev_name}<br>Slot: %{{x}}<br>Time: %{{customdata}}<br>Power: %{{y:.2f}} kW<extra></extra>",
+            line=dict(color="blue", width=2, dash='dot', shape='hv'),
+            name='Original Consumption',
+            customdata=x_labels,
+            hovertemplate=f"Original ON: {dev_name}<br>Slot: %{{x}}<br>Time: %{{customdata}}<br>Power: %{{y:.2f}} kW<extra></extra>",
             showlegend=False
         ), row=row_idx, col=col_idx)
 
         # Plot Optimized Simulated Consumption (using stepped line)
         optimized_profile_data = optimized_individual_consumption.get(dev_name, {s: 0.0 for s in x_slot_indices})
-        optimized_y = [optimized_profile_data.get(s, 0.0) for s in x_slot_indices]  # Ensure all slots covered
+        optimized_y = [optimized_profile_data.get(s, 0.0) for s in x_slot_indices]
 
         fig.add_trace(go.Scatter(
             x=x_slot_indices, y=optimized_y, mode='lines',
             line=dict(color="red", width=2, dash='solid', shape='hv'),
-            name='Optimized Simulated Consumption',
-            customdata=x_labels,  # Pass HH:MM labels for all slots
+            name='Optimized Consumption',
+            customdata=x_labels,
             hovertemplate=f"Optimized ON: {dev_name}<br>Slot: %{{x}}<br>Time: %{{customdata}}<br>Power: %{{y:.2f}} kW<extra></extra>",
             showlegend=False
         ), row=row_idx, col=col_idx)
 
-        # Update X-axis for each subplot
         fig.update_xaxes(
             title_text="Time Slot",
             tickmode='array',
-            tickvals=list(range(0, SLOTS_PER_DAY, SLOTS_PER_HOUR * 2)),  # Every 2 hours
+            tickvals=list(range(0, SLOTS_PER_DAY, SLOTS_PER_HOUR * 2)),
             ticktext=[x_labels[k] for k in range(0, SLOTS_PER_DAY, SLOTS_PER_HOUR * 2)],
             showgrid=True, gridwidth=1, gridcolor='rgba(0,0,0,0.05)',
             row=row_idx, col=col_idx
         )
         fig.update_yaxes(title_text="Power (kW)", range=[0, max_y_val], row=row_idx, col=col_idx)
 
-        # Move to next subplot position
         col_idx += 1
         if col_idx > 2:
             col_idx = 1
             row_idx += 1
 
     fig.update_layout(
-        title_text="Individual Device Schedules and Historical Operation Windows",
-        height=400 * rows,  # Adjust height based on number of rows
+        title_text="Individual Device Schedules: Original vs. Optimized",
+        height=400 * rows,
         showlegend=True,
         hovermode="closest",
         margin=dict(l=40, r=40, t=80, b=40),
@@ -282,13 +261,13 @@ def main():
         planning_results = generate_planning(
             date,
             algorithm='csa',
-            max_iter=100,
-            picLimit=1.5  # NEW: Enforce a 3.5 kW peak consumption limit
+            max_iter=200, # Increased for better convergence with larger search space
+            picLimit=1.2
         )
         planning_results['target_date_str'] = date  # Add target date to results for plot title
 
         print("\n--- Planning Results ---")
-        print(f"Default Cost: {planning_results['default_cost']:.2f} DA")
+        print(f"Original Cost: {planning_results['default_cost']:.2f} DA")
         print(f"Optimized Cost: {planning_results['optimized_cost']:.2f} DA")
         print(f"Cost Savings: {planning_results['default_cost'] - planning_results['optimized_cost']:.2f} DA")
         print(
@@ -300,12 +279,12 @@ def main():
         total_energy_default_sim = sum(planning_results['default_consumption'].values()) * slot_duration_hours
         total_energy_optimized_sim = sum(planning_results['optimized_consumption'].values()) * slot_duration_hours
 
-        print(f"Actual Historical Total Energy: {total_energy_real:.2f} kWh")
-        print(f"Default Simulated Total Energy: {total_energy_default_sim:.2f} kWh")
-        print(f"Optimized Simulated Total Energy: {total_energy_optimized_sim:.2f} kWh")
+        print(f"Actual Total Energy on Day: {total_energy_real:.2f} kWh")
+        print(f"Simulated Original Total Energy: {total_energy_default_sim:.2f} kWh")
+        print(f"Simulated Optimized Total Energy: {total_energy_optimized_sim:.2f} kWh")
 
         print("\n--- Schedules ---")
-        print("Default Schedule (Device -> Start Slot):")
+        print("Original Schedule (Device -> Start Slot):")
         for d, s in planning_results['default_planning'].items():
             print(f"  {d}: Slot {s} ({s // SLOTS_PER_HOUR:02d}:{(s % SLOTS_PER_HOUR) * SLOT_DURATION_MIN:02d})")
         print("Optimized Schedule (Device -> Start Slot):")
@@ -315,16 +294,16 @@ def main():
         # Plot the results (total consumption)
         plot_total_consumption_results(planning_results)
 
-        # Plot fitness evolution
-        plot_fitness_evolution(planning_results['fitness_history'],
-                               'csa')  # Assuming 'csa' algorithm is used for this run
-
-        # Plot individual device schedules
-        plot_individual_device_schedules(
-            planning_results['device_parameters'],
-            planning_results['default_individual_consumption'],  # Pass individual consumption data
-            planning_results['optimized_individual_consumption']  # Pass individual consumption data
-        )
+        # # Plot fitness evolution
+        # plot_fitness_evolution(planning_results['fitness_history'],
+        #                        'csa')  # Assuming 'csa' algorithm is used for this run
+        #
+        # # Plot individual device schedules
+        # plot_individual_device_schedules(
+        #     planning_results['device_parameters'],
+        #     planning_results['default_individual_consumption'],  # Pass individual consumption data
+        #     planning_results['optimized_individual_consumption']  # Pass individual consumption data
+        # )
 
     except ValueError as e:
         print(f"Error: {e}")

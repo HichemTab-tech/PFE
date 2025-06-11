@@ -8,7 +8,7 @@ class CsaSolver(Solver):
     def __init__(
         self,
         fitness,
-        params: dict, # This `params` dictionary contains α, β, LOT, P, W, L, M, valid_hours (now valid_slots)
+        params: dict, # This `params` dictionary contains M, LOT, P, W, L, valid_slots
         repair_function: Callable = None, # ADDED: Repair function for constraints
     ):
         self.fitness = fitness
@@ -16,8 +16,7 @@ class CsaSolver(Solver):
         # ADDED: Store repair function, defaulting to an identity function if None
         self.repair_function = repair_function if repair_function else lambda s: s
         # Extract device names once from any of the parameter dictionaries
-        # All α, β, etc. should have the same set of keys (device names)
-        self.devices = list(self.params['α'].keys())
+        self.devices = list(self.params['P'].keys())
 
     # Corrected 'run' signature: it now expects 'devices' (list of names) not 'params'
     def run(self, devices_to_schedule: list, seed: int = None, max_iter: int = 100):  # Updated default max_iter
@@ -35,7 +34,8 @@ class CsaSolver(Solver):
         population = []
         memories = []
         for _ in range(n_crows):
-            η = {d: (self.params['α'][d] if self.params['W'][d] == 0 else int(
+            # MODIFIED: For immovable devices (W=0), lock to original start time (M), not historical alpha.
+            η = {d: (self.params['M'][d] if self.params['W'][d] == 0 else int(
                 np.random.choice(self.params['valid_hours'][d]))) for d in devices}
             population.append(η.copy())
             memories.append(η.copy())
@@ -56,10 +56,10 @@ class CsaSolver(Solver):
                 else:
                     η_new = {d: int(np.random.choice(self.params['valid_hours'][d])) for d in devices}
 
-                # enforce immovable (w=0) → lock at α[d]
+                # MODIFIED: enforce immovable (w=0) → lock at original start time (M)
                 for d in η_new:
                     if self.params['W'][d] == 0:
-                        η_new[d] = self.params['α'][d]  # Use alpha_slot
+                        η_new[d] = self.params['M'][d]
 
                 # ADDED: Repair the new schedule to satisfy hard constraints (like picLimit)
                 η_new = self.repair_function(η_new)

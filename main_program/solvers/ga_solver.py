@@ -29,7 +29,7 @@ class GaSolver(Solver):
             repair_function: Callable = None,  # ADDED: Repair function for constraints
     ):
         # fitness: a callable mapping schedule→cost (lower is better)
-        # params: dict with keys 'α', 'beta', 'valid_hours', 'W', etc.
+        # params: dict with keys 'M', 'valid_hours', 'W', etc.
         self.fitness = fitness
         self.params = params
         self.pop_size = pop_size
@@ -54,8 +54,8 @@ class GaSolver(Solver):
             indiv = {}
             for d in devices:
                 if self.params['W'][d] == 0:
-                    # immovable device locked at α[d]
-                    indiv[d] = self.params['α'][d]
+                    # MODIFIED: immovable device locked at its original start time (M), not historical alpha
+                    indiv[d] = self.params['M'][d]
                 else:
                     indiv[d] = int(random.choice(self.params['valid_hours'][d]))
             population.append(indiv.copy())
