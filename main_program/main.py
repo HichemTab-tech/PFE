@@ -20,111 +20,88 @@ def plot_total_consumption_results(results: Dict[str, Any]):
     default_consumption_real = results["default_consumption_real"]
     default_consumption = results["default_consumption"]
     optimized_consumption = results["optimized_consumption"]
-    price_profile = pd.Series(results["price_profile"])  # Convert back to Series for easy indexing
+    baseline_load = results["baseline_load"]
+    price_profile = pd.Series(results["price_profile"])
 
-    # Create x-axis labels (time in HH:MM format)
     x_labels = []
     for i in range(SLOTS_PER_DAY):
         hour = i // SLOTS_PER_HOUR
         minute = (i % SLOTS_PER_HOUR) * slot_duration_min
         x_labels.append(f"{hour:02d}:{minute:02d}")
 
-    fig = go.Figure()
+    # Create a figure with a secondary y-axis for the price
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
 
-    # Add shaded regions for price profile
-    # Determine the max Y value for shading height
-    max_consumption_value = max(
-        max(default_consumption_real.values()),
-        max(default_consumption.values()),
-        max(optimized_consumption.values())
-    ) * 1.1  # Add a little buffer
+    # --- Simplified Price Trace ---
+    # Add the price profile as a simple line, NOT a shaded area
+    fig.add_trace(
+        go.Scatter(
+            x=price_profile.index,
+            y=price_profile.values,
+            name='Price (DA/kWh)',
+            line=dict(color='rgba(255, 165, 0, 0.5)', width=2, dash='dash')  # Changed to a dashed line
+        ),
+        secondary_y=True,
+    )
+    # --- END OF SIMPLIFIED TRACE ---
 
-    # Add picLimit line if it exists
+    # Add the consumption traces to the primary y-axis
+    fig.add_trace(go.Scatter(
+        x=list(baseline_load.keys()), y=list(baseline_load.values()),
+        mode='lines', name='Uncontrollable Baseline Load',
+        line=dict(color='rgba(128, 128, 128, 0.7)', width=2),  # Removed dash for clarity
+        fill='tozeroy', fillcolor='rgba(211, 211, 211, 0.3)'
+    ), secondary_y=False)
+
+    fig.add_trace(go.Scatter(
+        x=list(default_consumption_real.keys()), y=list(default_consumption_real.values()),
+        mode='lines', name='Actual Historical Consumption', line=dict(color='darkgray', width=3)
+    ), secondary_y=False)
+
+    fig.add_trace(go.Scatter(
+        x=list(default_consumption.keys()), y=list(default_consumption.values()),
+        mode='lines', name='Default Simulated Consumption',
+        line=dict(color='blue', width=2, dash='dot')
+    ), secondary_y=False)
+
+    fig.add_trace(go.Scatter(
+        x=list(optimized_consumption.keys()), y=list(optimized_consumption.values()),
+        mode='lines', name='Optimized Consumption', line=dict(color='red', width=2)
+    ), secondary_y=False)
+
     picLimit = results.get("picLimit")
     if picLimit is not None:
         fig.add_hline(y=picLimit, line_dash="dash", line_color="firebrick",
                       annotation_text=f"Peak Limit ({picLimit} kW)",
                       annotation_position="bottom right")
-        max_consumption_value = max(max_consumption_value, picLimit * 1.1)
-
-
-    price_colors = {
-        1.2050: "rgba(144, 238, 144, 0.2)",  # Light green
-        2.1645: "rgba(255, 255, 0, 0.2)",  # Yellow
-        8.1147: "rgba(255, 165, 0, 0.2)",  # Orange
-        #0.22: "rgba(255, 99, 71, 0.2)"  # Tomato/Red
-    }
-
-    current_price = None
-    start_slot_for_price = 0
-    # Iterate through slots to find price changes and add shaded regions
-    for i in range(SLOTS_PER_DAY):
-        price_at_slot = price_profile.get(i)
-        if current_price is None:
-            current_price = price_at_slot
-            start_slot_for_price = i
-        elif price_at_slot != current_price:
-            fig.add_shape(
-                type="rect",
-                x0=start_slot_for_price,
-                x1=i,  # The shape ends before the current slot, as current slot has new price
-                y0=0,
-                y1=max_consumption_value,
-                fillcolor=price_colors.get(current_price, "rgba(0,0,0,0.1)"),
-                layer="below",
-                line_width=0,
-            )
-            # Add annotation for the completed price segment
-            fig.add_annotation(
-                x=(start_slot_for_price + i) / 2,  # Horizontal center of the segment
-                y=max_consumption_value * 0.5,  # Vertical center of the segment (adjust as needed)
-                text=f"{current_price:.2f}",  # The price value for this segment
-                showarrow=False,
-                font=dict(
-                    size=9,  # Small font size
-                    color="rgba(0, 0, 0, 0.5)"  # Muted text color (e.g., semi-transparent black)
-                ),
-                textangle=0,  # Horizontal text
-            )
-            current_price = price_at_slot
-            start_slot_for_price = i
-    # Add the last segment
-    if current_price is not None:
-        fig.add_shape(
-            type="rect",
-            x0=start_slot_for_price,
-            x1=SLOTS_PER_DAY,
-            y0=0,
-            y1=max_consumption_value,
-            fillcolor=price_colors.get(current_price, "rgba(0,0,0,0.1)"),
-            layer="below",
-            line_width=0,
-        )
-
-    # Add consumption traces
-    fig.add_trace(go.Scatter(x=list(default_consumption_real.keys()), y=list(default_consumption_real.values()),
-                             mode='lines', name='Actual Historical Consumption', line=dict(color='lightgray', width=3)))
-    fig.add_trace(go.Scatter(x=list(default_consumption.keys()), y=list(default_consumption.values()),
-                             mode='lines', name='Default Simulated Consumption',
-                             line=dict(color='blue', width=2, dash='dot')))
-    fig.add_trace(go.Scatter(x=list(optimized_consumption.keys()), y=list(optimized_consumption.values()),
-                             mode='lines', name='Optimized Consumption', line=dict(color='red', width=2)))
 
     # Update layout for better aesthetics
     fig.update_layout(
         title_text=f"Total Energy Consumption and Price Profile for {datetime.date.fromisoformat(results['target_date_str'])}",
         xaxis_title="Time Slot",
-        yaxis_title="Power Consumption (kW)",
-        hovermode="x unified",
+        # =================================================================
+        # CRITICAL PERFORMANCE FIX: Change the hover mode
+        hovermode="closest",
+        # =================================================================
         legend=dict(x=0.01, y=0.99, bgcolor='rgba(255,255,255,0.7)', bordercolor='rgba(0,0,0,0.2)'),
         margin=dict(l=40, r=40, t=80, b=40),
         xaxis=dict(
             tickmode='array',
-            tickvals=list(range(0, SLOTS_PER_DAY, SLOTS_PER_HOUR * 2)),  # Every 2 hours
+            tickvals=list(range(0, SLOTS_PER_DAY, SLOTS_PER_HOUR * 2)),
             ticktext=[x_labels[i] for i in range(0, SLOTS_PER_DAY, SLOTS_PER_HOUR * 2)],
             showgrid=True, gridwidth=1, gridcolor='rgba(0,0,0,0.05)'
         ),
-        yaxis=dict(showgrid=True, gridwidth=1, gridcolor='rgba(0,0,0,0.05)', range=[0, max_consumption_value])
+        yaxis=dict(
+            title_text="Power Consumption (kW)",
+            showgrid=True, gridwidth=1, gridcolor='rgba(0,0,0,0.05)'
+        ),
+        yaxis2=dict(
+            title_text="Price (DA/kWh)",
+            showgrid=False,
+            zeroline=False,
+            showticklabels=True,
+            range=[0, price_profile.max() * 3]  # Gave it even more room
+        )
     )
     fig.show()
 

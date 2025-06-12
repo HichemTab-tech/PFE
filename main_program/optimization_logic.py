@@ -42,13 +42,24 @@ def build_load_profile(df_day: pd.DataFrame, devices: Dict[str, Any]) -> Tuple[p
     df_day = df_day.copy()  # Operate on a copy to avoid SettingWithCopyWarning
     df_day['slot'] = df_day.index.hour * SLOTS_PER_HOUR + df_day.index.minute // SLOT_DURATION_MIN
 
-    total = df_day["use [kW]"]
+    # Get total usage and generation
+    # =================================================================
+    total_usage = df_day["use [kW]"]
+    generation = df_day.get("gen [kW]", 0) # Use .get for safety if column is missing
+    # =================================================================
+
     smart_device_cols = [c for c in df_day.columns if any(d in c for d in devices)]
     smart_total = df_day[smart_device_cols].sum(axis=1)
 
-    baseline = total - smart_total
+    # MODIFIED: Correct baseline calculation
+    # Baseline is what the grid sees (usage) PLUS what was generated, MINUS smart devices.
+    # This represents the "other" non-schedulable consumption.
+    # =================================================================
+    baseline = total_usage + generation - smart_total
+    # =================================================================
 
     # --- FIX 1: Ensure baseline is never negative ---
+    # This is still a good safety measure in case of other data errors.
     baseline = np.maximum(0, baseline)
     # -----------------------------------------------
 
